@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Bitcoin Price Prediction Dashboard</title>
+  <!-- Tailwind via CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0b0b0c',
+            card: '#111113',
+            subtle: '#6b7280',
+            accent: '#3b82f6'
+          },
+          boxShadow: {
+            soft: '0 6px 24px rgba(0,0,0,.25)'
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    html, body { background: #f9f9f7; color: #111113; }
+    .card { background: #ffffff; border: 1px solid #e5e7eb; }
+    .chip { background: #f2f2f0; border: 1px solid #e0e0e0; }
+    .input, .stat { background: #fdfdfc; border: 1px solid #e0e0e0; }
+    .stat { background:#fdfdfc; border:1px solid #232329; }
+    .chart-fixed { width: 1100px; height: 420px; margin: 0 auto; }
+    /* Chart.js will size to the container when responsive + maintainAspectRatio:false */
+    #priceChart { width: 100% !important; height: 100% !important; display:block; }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div id="app" class="mx-auto max-w-7xl px-4 py-8">
+    <!-- Header -->
+    <header class="flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-3xl sm:text-4xl font-bold">Bitcoin Price Prediction Dashboard</h1>
+        <p class="mt-1 text-subtle">Historical analysis of Bitcoin price predictions vs actual market prices</p>
+      </div>
+      <div class="text-right text-subtle" v-if="lastUpdated">
+        <span class="text-xs">Last updated:</span>
+        <div class="font-medium">{{ lastUpdated }}</div>
+      </div>
+    </header>
+
+    <!-- KPI Cards -->
+    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
+      <!-- Current Actual Price -->
+      <article class="card rounded-2xl p-5 shadow-soft">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm text-subtle">Current Actual Price</h3>
+          <span class="text-sm">$</span>
+        </div>
+        <div class="mt-2 text-3xl font-extrabold">{{ fmtCurrency(currentActual) }}</div>
+        <div class="mt-2 text-xs" :class="pctChange < 0 ? 'text-red-400' : 'text-green-400'">
+          <span class="align-middle">{{ pctChange < 0 ? '▼' : '▲' }}</span>
+          {{ pctChange.toFixed(2) }}% from previous
+        </div>
+      </article>
+
+      <!-- Latest Prediction -->
+      <article class="card rounded-2xl p-5 shadow-soft">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm text-subtle">Latest Prediction</h3>
+          <span class="i-lucide-target text-subtle"></span>
+        </div>
+        <div class="mt-2 text-3xl font-extrabold">{{ fmtCurrency(latestPrediction) }}</div>
+        <div class="mt-2 text-xs text-subtle">Difference: {{ fmtCurrency(currentActual - latestPrediction) }}</div>
+      </article>
+
+      <!-- Average Accuracy (overall) -->
+      <article class="card rounded-2xl p-5 shadow-soft">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm text-subtle">Average Accuracy (overall)</h3>
+          <span class="text-subtle">λ</span>
+        </div>
+        <div class="mt-2 text-3xl font-extrabold">{{ avgAccuracy.toFixed(2) }}%</div>
+        <div class="mt-2 text-xs text-subtle">Across all data</div>
+      </article>
+
+      <!-- MAE / RMSE (overall) -->
+      <article class="card rounded-2xl p-5 shadow-soft">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm text-subtle">Mean Absolute Error (overall)</h3>
+          <span class="text-subtle">⇵</span>
+        </div>
+        <div class="mt-2 text-3xl font-extrabold">{{ fmtCurrency(mae) }}</div>
+        <div class="mt-2 text-xs text-subtle">RMSE: {{ fmtCurrency(rmse) }}</div>
+      </article>
+    </section>
+
+    <!-- Tabs (removed Error/Accuracy; keep Price + Performance) -->
+    <nav class="mt-6">
+      <div class="grid grid-cols-2 gap-2">
+      </div>
+    </nav>
+
+    <!-- Charts / Content -->
+    <section class="card rounded-2xl mt-4 p-4 sm:p-6 shadow-soft">
+      <template v-if="activeTab==='price'">
+        <h2 class="text-lg font-semibold mb-1">Actual vs Predicted Bitcoin Price</h2>
+        <p class="text-subtle text-sm">Compare actual and predicted prices for a selected date range</p>
+
+        <!-- Range controls -->
+        <div class="mt-4 grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div class="sm:col-span-2 flex items-center gap-3">
+            <label class="text-sm text-subtle w-24">Start date</label>
+            <input class="input rounded-lg px-3 py-2 w-full" type="date" v-model="startDate">
+          </div>
+          <div class="sm:col-span-2 flex items-center gap-3">
+            <label class="text-sm text-subtle w-24">End date</label>
+            <input class="input rounded-lg px-3 py-2 w-full" type="date" v-model="endDate">
+          </div>
+        </div>
+
+        <!-- Range stats -->
+        <div class="mt-4 grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div class="stat rounded-xl px-4 py-3">
+            <div class="text-xs text-subtle">Points in range</div>
+            <div class="text-xl font-semibold">{{ selCount }}</div>
+          </div>
+          <div class="stat rounded-xl px-4 py-3">
+            <div class="text-xs text-subtle">MAE (range)</div>
+            <div class="text-xl font-semibold">{{ fmtCurrency(selMAE) }}</div>
+          </div>
+          <div class="stat rounded-xl px-4 py-3">
+            <div class="text-xs text-subtle">RMSE (range)</div>
+            <div class="text-xl font-semibold">{{ fmtCurrency(selRMSE) }}</div>
+          </div>
+          <div class="stat rounded-xl px-4 py-3">
+            <div class="text-xs text-subtle">Avg Accuracy (range)</div>
+            <div class="text-xl font-semibold">{{ selAvgAccuracy.toFixed(2) }}%</div>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <canvas id="priceChart" height="120"></canvas>
+        </div>
+      </template>
+    </section>
+
+    <footer class="mt-8 text-center text-xs text-subtle">NON FINANCIAL ADVICE, PLEASE DO YOUR OWN RESEARCH</footer>
+  </div>
+
+  <!-- Libraries -->
+  <script src="libs/vue.global.prod.js"></script>
+  <script src="libs/chart.umd.min.js"></script>
+  <script src="libs/papaparse.min.js"></script>
+  <!-- App script -->
+  <script type="module">
+    const { createApp, ref, computed, onMounted, watch } = Vue;
+
+    createApp({
+      setup() {
+        const DATA_URL = 'predict.csv'; // change to '/api/bitcoin-prices' for backend
+
+        const rows = ref([]); // full dataset
+        const activeTab = ref('price');
+
+        // Range controls
+        const startDate = ref('');
+        const endDate   = ref('');
+
+        const lastUpdated = computed(() => rows.value.length ? new Date(rows.value.at(-1).date).toISOString().slice(0,10) : null);
+        const lastDate = computed(() => lastUpdated.value);
+
+        const currentActual = computed(() => rows.value.length ? Number(rows.value.at(-1).actual) : 0);
+        const latestPrediction = computed(() => rows.value.length ? Number(rows.value.at(-1).predicted) : 0);
+        const prevActual = computed(() => rows.value.length > 1 ? Number(rows.value.at(-2).actual) : 0);
+        const pctChange = computed(() => prevActual.value ? ((currentActual.value - prevActual.value) / prevActual.value * 100) : 0);
+
+        // Overall metrics
+        const errors = computed(() => rows.value.map(r => Math.abs(r.predicted - r.actual)));
+        const mae = computed(() => errors.value.length ? errors.value.reduce((a,b)=>a+b,0)/errors.value.length : 0);
+        const rmse = computed(() => {
+          if (!errors.value.length) return 0;
+          const mse = errors.value.reduce((a,b)=>a + b*b, 0) / errors.value.length;
+          return Math.sqrt(mse);
+        });
+        const maxAbsError = computed(() => errors.value.length ? Math.max(...errors.value) : 0);
+        const pointAcc = computed(() => rows.value.map(r => 1 - Math.abs((r.predicted - r.actual)) / (r.actual || 1)));
+        const avgAccuracy = computed(() => pointAcc.value.length ? (pointAcc.value.reduce((a,b)=>a+b,0) / pointAcc.value.length) * 100 : 0);
+
+        // ===== Range filtering =====
+        const filtered = computed(() => {
+          if (!rows.value.length) return [];
+          const s = startDate.value ? new Date(startDate.value) : null;
+          const e = endDate.value   ? new Date(endDate.value)   : null;
+          return rows.value.filter(r => {
+            const d = new Date(r.date);
+            if (s && d < s) return false;
+            if (e && d > e) return false;
+            return true;
+          });
+        });
+
+        // Range metrics
+        const selCount = computed(() => filtered.value.length);
+        const selErrors = computed(() => filtered.value.map(r => Math.abs(r.predicted - r.actual)));
+        const selMAE = computed(() => selErrors.value.length ? selErrors.value.reduce((a,b)=>a+b,0)/selErrors.value.length : 0);
+        const selRMSE = computed(() => {
+          if (!selErrors.value.length) return 0;
+          const mse = selErrors.value.reduce((a,b)=>a + b*b, 0) / selErrors.value.length;
+          return Math.sqrt(mse);
+        });
+        const selPointAcc = computed(() => filtered.value.map(r => 1 - Math.abs((r.predicted - r.actual)) / (r.actual || 1)));
+        const selAvgAccuracy = computed(() => selPointAcc.value.length ? (selPointAcc.value.reduce((a,b)=>a+b,0) / selPointAcc.value.length) * 100 : 0);
+
+        // Chart
+        let priceChart;
+
+        function fmtCurrency(v) { return v?.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) ?? '-'; }
+        function tabClass(key){ return activeTab.value === key ? 'ring-1 ring-accent/40' : 'opacity-80 hover:opacity-100'; }
+        function ensureTypes(arr){ return arr.map(r => ({ date: r.date, actual: Number(r.actual), predicted: Number(r.predicted) })); }
+
+        async function loadData(){
+          const res = await fetch(DATA_URL, { headers: { 'accept': 'text/csv, application/json' } });
+          const text = await res.text();
+          let data;
+          try { data = JSON.parse(text); if (Array.isArray(data)) { rows.value = ensureTypes(data); return; } } catch(_) {}
+          const parsed = Papa.parse(text.trim(), { header: true, skipEmptyLines: true });
+          rows.value = ensureTypes(parsed.data);
+          // init range to full span
+          if (rows.value.length) {
+            startDate.value = rows.value[0].date;
+            endDate.value = rows.value.at(-1).date;
+          }
+        }
+
+        function buildPrice(){
+          const labels = filtered.value.map(r => r.date);
+          const actual = filtered.value.map(r => r.actual);
+          const predicted = filtered.value.map(r => r.predicted);
+          if (priceChart) priceChart.destroy();
+          const ctx1 = document.getElementById('priceChart').getContext('2d');
+          priceChart = new Chart(ctx1, {
+            type: 'line',
+            data: {
+              labels,
+              datasets: [
+                    {
+                      label: 'Actual Price',
+                      data: actual,
+                      borderColor: '#2563eb',      // biru kontras
+                      backgroundColor: 'rgba(37,99,235,0.2)',
+                      borderWidth: 2.5,
+                      tension: .25,
+                      pointRadius: 2
+                    },
+                    {
+                      label: 'Predicted Price',
+                      data: predicted,
+                      borderColor: '#f97316',      // oranye hangat
+                      backgroundColor: 'rgba(249,115,22,0.2)',
+                      borderWidth: 2.5,
+                      tension: .25,
+                      pointRadius: 2,
+                      borderDash: [6,4]
+                    }
+                  ]
+
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              plugins: { legend: { labels: { color: '#374151' } }, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtCurrency(ctx.parsed.y)}` } } },
+              scales: {
+                x: { ticks: { color: '#a1a1aa' }, grid: { color: '#e5e7eb' } },
+                y: { ticks: { color: '#a1a1aa', callback: v => `$${(v/1000).toFixed(0)}k` }, grid: { color: '#1f2937' } }
+              }
+            }
+          });
+        }
+
+        onMounted(async () => { await loadData(); buildPrice(); });
+        watch([activeTab, startDate, endDate, filtered], () => setTimeout(buildPrice, 50));
+
+        return { rows, activeTab, lastUpdated, lastDate, currentActual, latestPrediction, pctChange, mae, rmse, avgAccuracy, maxAbsError,
+                 fmtCurrency, tabClass,
+                 // range exposure
+                 startDate, endDate, selCount, selMAE, selRMSE, selAvgAccuracy };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
